@@ -68,7 +68,7 @@ async function start() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: true,
+      audio: false,
     });
   } catch (e) {
     setStatus('camera denied: ' + e.message);
