@@ -92,21 +92,26 @@ async function start() {
     peer.reconnect();
   });
 
+  const callViewer = (viewerId) => {
+    console.log('calling viewer', viewerId);
+    const call = peer.call(viewerId, stream);
+    viewers++;
+    setStatus(`live · ${viewers} viewer${viewers > 1 ? 's' : ''}`, true);
+    const drop = () => {
+      viewers = Math.max(0, viewers - 1);
+      setStatus(viewers ? `live · ${viewers} viewer${viewers > 1 ? 's' : ''}` : 'live · waiting for viewer', true);
+    };
+    call.on('close', drop);
+    call.on('error', (e) => { console.warn('call err', e); drop(); });
+  };
+
   peer.on('connection', (conn) => {
-    conn.on('open', () => {
-      const call = peer.call(conn.peer, stream);
-      viewers++;
-      setStatus(`live · ${viewers} viewer${viewers > 1 ? 's' : ''}`, true);
-      const drop = () => {
-        viewers = Math.max(0, viewers - 1);
-        setStatus(viewers ? `live · ${viewers} viewer${viewers > 1 ? 's' : ''}` : 'live · waiting for viewer', true);
-      };
-      conn.on('close', drop);
-      call.on('close', drop);
-    });
+    console.log('viewer data conn from', conn.peer);
+    callViewer(conn.peer);
+    conn.on('close', () => console.log('data conn closed', conn.peer));
   });
 
-  peer.on('call', (call) => call.answer(stream));
+  peer.on('call', (incoming) => incoming.answer(stream));
 }
 
 document.getElementById('go').onclick = () => start().catch(e => setStatus('failed: ' + e.message));
