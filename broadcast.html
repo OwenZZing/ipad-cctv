@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CCTV · Broadcast</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: -apple-system, system-ui, sans-serif; }
+  #video { width: 100vw; height: 100vh; object-fit: cover; }
+  #hud { position: fixed; top: 8px; left: 8px; padding: 6px 10px; background: rgba(0,0,0,.55); border-radius: 6px; font-size: 13px; }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: #111; }
+  #start button { padding: 18px 28px; font-size: 18px; border-radius: 10px; border: 0; background: #2563eb; color: #fff; }
+</style>
+</head>
+<body>
+<div id="start"><button id="go">Start broadcasting</button></div>
+<video id="video" autoplay muted playsinline></video>
+<div id="hud">idle</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const ROOM_ID = new URLSearchParams(location.search).get('room') || 'cctv-room-1';
+const hud = document.getElementById('hud');
+const video = document.getElementById('video');
+const startOverlay = document.getElementById('start');
+
+function setHud(t) { hud.textContent = t; }
+
+async function keepAwake() {
+  try {
+    if ('wakeLock' in navigator) {
+      const lock = await navigator.wakeLock.request('screen');
+      document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible') {
+          try { await navigator.wakeLock.request('screen'); } catch {}
+        }
+      });
+      return lock;
+    }
+  } catch (e) { console.warn('wakeLock failed', e); }
+}
+
+async function start() {
+  startOverlay.remove();
+  setHud('requesting camera…');
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: true,
+  });
+  video.srcObject = stream;
+  keepAwake();
+
+  const peer = new Peer(ROOM_ID, {
+    host: location.hostname,
+    port: location.port || (location.protocol === 'https:' ? 443 : 80),
+    path: '/peerjs',
+    secure: location.protocol === 'https:',
+    debug: 1,
+  });
+
+  peer.on('open', (id) => setHud(`live · room "${id}" · waiting for viewer`));
+  peer.on('error', (err) => setHud('error: ' + err.type));
+  peer.on('disconnected', () => {
+    setHud('disconnected · reconnecting…');
+    peer.reconnect();
+  });
+  peer.on('call', (call) => {
+    call.answer(stream);
+    setHud('viewer connected');
+    call.on('close', () => setHud('viewer left · waiting'));
+  });
+}
+
+document.getElementById('go').onclick = () => start().catch(e => setHud('failed: ' + e.message));
+</script>
+</body>
+</html>

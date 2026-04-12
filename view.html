@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CCTV · View</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: -apple-system, system-ui, sans-serif; }
+  #video { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+  #hud { position: fixed; top: 8px; left: 8px; padding: 6px 10px; background: rgba(0,0,0,.55); border-radius: 6px; font-size: 13px; }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: #111; }
+  #start button { padding: 18px 28px; font-size: 18px; border-radius: 10px; border: 0; background: #16a34a; color: #fff; }
+</style>
+</head>
+<body>
+<div id="start"><button id="go">Connect</button></div>
+<video id="video" autoplay playsinline></video>
+<div id="hud">idle</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const ROOM_ID = new URLSearchParams(location.search).get('room') || 'cctv-room-1';
+const hud = document.getElementById('hud');
+const video = document.getElementById('video');
+const startOverlay = document.getElementById('start');
+
+function setHud(t) { hud.textContent = t; }
+
+function connect() {
+  startOverlay.remove();
+  setHud('connecting…');
+  const peer = new Peer(undefined, {
+    host: location.hostname,
+    port: location.port || (location.protocol === 'https:' ? 443 : 80),
+    path: '/peerjs',
+    secure: location.protocol === 'https:',
+    debug: 1,
+  });
+
+  peer.on('open', () => {
+    setHud('calling ' + ROOM_ID + '…');
+    const call = peer.call(ROOM_ID, new MediaStream());
+    call.on('stream', (remote) => {
+      video.srcObject = remote;
+      setHud('live · ' + ROOM_ID);
+    });
+    call.on('close', () => setHud('call ended'));
+    call.on('error', (e) => setHud('call error: ' + e));
+  });
+  peer.on('error', (err) => setHud('error: ' + err.type + ' · room may be offline'));
+}
+
+document.getElementById('go').onclick = connect;
+</script>
+</body>
+</html>
