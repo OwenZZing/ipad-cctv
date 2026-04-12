@@ -2,33 +2,64 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>CCTV · View</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: -apple-system, system-ui, sans-serif; }
-  #video { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
-  #hud { position: fixed; top: 8px; left: 8px; padding: 6px 10px; background: rgba(0,0,0,.55); border-radius: 6px; font-size: 13px; }
-  #start { position: fixed; inset: 0; display: grid; place-items: center; background: #111; }
-  #start button { padding: 18px 28px; font-size: 18px; border-radius: 10px; border: 0; background: #16a34a; color: #fff; }
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; color: #e5e7eb; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; right: 12px; display: flex; justify-content: space-between; gap: 8px; pointer-events: none; }
+  .pill { pointer-events: auto; background: rgba(15,23,42,.75); backdrop-filter: blur(12px); border-radius: 999px; padding: 8px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+  .dot.live { background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,.7); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 30%, #1e293b, #020617); z-index: 10; }
+  #start .box { text-align: center; padding: 40px 32px; }
+  #start h1 { margin: 0 0 8px; font-weight: 600; font-size: 24px; }
+  #start p { margin: 0 0 28px; color: #94a3b8; font-size: 14px; }
+  #go { padding: 18px 40px; font-size: 17px; font-weight: 600; border: 0; border-radius: 14px; background: linear-gradient(135deg,#22c55e,#15803d); color: #fff; box-shadow: 0 10px 30px -10px rgba(34,197,94,.6); cursor: pointer; }
+  #unmute { position: fixed; bottom: calc(env(safe-area-inset-bottom, 12px) + 16px); left: 50%; transform: translateX(-50%); padding: 12px 22px; border: 0; border-radius: 999px; background: rgba(15,23,42,.85); color: #fff; font-size: 14px; cursor: pointer; display: none; }
 </style>
 </head>
 <body>
-<div id="start"><button id="go">Connect</button></div>
-<video id="video" autoplay playsinline></video>
-<div id="hud">idle</div>
+<div id="start"><div class="box">
+  <h1>iPad CCTV</h1>
+  <p id="roomLabel">room: —</p>
+  <button id="go">▶  Connect</button>
+</div></div>
+<video id="video" autoplay playsinline muted></video>
+<button id="unmute">🔇 Tap to unmute</button>
+<div class="hud">
+  <span class="pill"><span id="dot" class="dot"></span><span id="status">idle</span></span>
+  <span class="pill" id="room">room: —</span>
+</div>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const ROOM_ID = new URLSearchParams(location.search).get('room') || 'cctv-room-1';
-const hud = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const dotEl = document.getElementById('dot');
+const roomEl = document.getElementById('room');
 const video = document.getElementById('video');
 const startOverlay = document.getElementById('start');
+const unmuteBtn = document.getElementById('unmute');
+roomEl.textContent = 'room: ' + ROOM_ID;
+document.getElementById('roomLabel').textContent = 'room: ' + ROOM_ID;
 
-function setHud(t) { hud.textContent = t; }
+function setStatus(t, live) {
+  statusEl.textContent = t;
+  dotEl.classList.toggle('live', !!live);
+}
+
+unmuteBtn.onclick = () => {
+  video.muted = false;
+  unmuteBtn.style.display = 'none';
+};
 
 function connect() {
   startOverlay.remove();
-  setHud('connecting…');
+  setStatus('connecting…');
+
   const peer = new Peer(undefined, {
     host: location.hostname,
     port: location.port || (location.protocol === 'https:' ? 443 : 80),
@@ -38,16 +69,34 @@ function connect() {
   });
 
   peer.on('open', () => {
-    setHud('calling ' + ROOM_ID + '…');
-    const call = peer.call(ROOM_ID, new MediaStream());
+    setStatus('calling ' + ROOM_ID + '…');
+    const conn = peer.connect(ROOM_ID, { reliable: true });
+    conn.on('open', () => setStatus('connected, waiting for stream…'));
+    conn.on('error', (e) => setStatus('conn error: ' + e));
+    conn.on('close', () => setStatus('disconnected'));
+  });
+
+  peer.on('call', (call) => {
+    call.answer();
     call.on('stream', (remote) => {
       video.srcObject = remote;
-      setHud('live · ' + ROOM_ID);
+      const playAttempt = video.play();
+      if (playAttempt) playAttempt.catch(() => {});
+      setStatus('live · ' + ROOM_ID, true);
+      unmuteBtn.style.display = 'block';
     });
-    call.on('close', () => setHud('call ended'));
-    call.on('error', (e) => setHud('call error: ' + e));
+    call.on('close', () => setStatus('stream ended'));
+    call.on('error', (e) => setStatus('call error: ' + e));
   });
-  peer.on('error', (err) => setHud('error: ' + err.type + ' · room may be offline'));
+
+  peer.on('error', (err) => {
+    if (err.type === 'peer-unavailable') setStatus('room offline · no broadcaster');
+    else setStatus('error: ' + err.type);
+  });
+  peer.on('disconnected', () => {
+    setStatus('reconnecting…');
+    peer.reconnect();
+  });
 }
 
 document.getElementById('go').onclick = connect;

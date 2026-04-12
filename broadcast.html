@@ -2,51 +2,78 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>CCTV · Broadcast</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: -apple-system, system-ui, sans-serif; }
-  #video { width: 100vw; height: 100vh; object-fit: cover; }
-  #hud { position: fixed; top: 8px; left: 8px; padding: 6px 10px; background: rgba(0,0,0,.55); border-radius: 6px; font-size: 13px; }
-  #start { position: fixed; inset: 0; display: grid; place-items: center; background: #111; }
-  #start button { padding: 18px 28px; font-size: 18px; border-radius: 10px; border: 0; background: #2563eb; color: #fff; }
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; color: #e5e7eb; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; right: 12px; display: flex; justify-content: space-between; gap: 8px; pointer-events: none; }
+  .pill { pointer-events: auto; background: rgba(15,23,42,.75); backdrop-filter: blur(12px); border-radius: 999px; padding: 8px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+  .dot.live { background: #ef4444; box-shadow: 0 0 0 0 rgba(239,68,68,.7); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 30%, #1e293b, #020617); z-index: 10; }
+  #start .box { text-align: center; padding: 40px 32px; }
+  #start h1 { margin: 0 0 8px; font-weight: 600; font-size: 24px; }
+  #start p { margin: 0 0 28px; color: #94a3b8; font-size: 14px; }
+  #go { padding: 18px 40px; font-size: 17px; font-weight: 600; border: 0; border-radius: 14px; background: linear-gradient(135deg,#ef4444,#dc2626); color: #fff; box-shadow: 0 10px 30px -10px rgba(239,68,68,.6); cursor: pointer; }
 </style>
 </head>
 <body>
-<div id="start"><button id="go">Start broadcasting</button></div>
+<div id="start"><div class="box">
+  <h1>iPad CCTV</h1>
+  <p>Tap to start streaming from this device.</p>
+  <button id="go">● Start broadcasting</button>
+</div></div>
 <video id="video" autoplay muted playsinline></video>
-<div id="hud">idle</div>
+<div class="hud">
+  <span class="pill"><span id="dot" class="dot"></span><span id="status">idle</span></span>
+  <span class="pill" id="room">room: —</span>
+</div>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const ROOM_ID = new URLSearchParams(location.search).get('room') || 'cctv-room-1';
-const hud = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const dotEl = document.getElementById('dot');
+const roomEl = document.getElementById('room');
 const video = document.getElementById('video');
 const startOverlay = document.getElementById('start');
+roomEl.textContent = 'room: ' + ROOM_ID;
 
-function setHud(t) { hud.textContent = t; }
+let viewers = 0;
+function setStatus(t, live) {
+  statusEl.textContent = t;
+  dotEl.classList.toggle('live', !!live);
+}
 
 async function keepAwake() {
   try {
     if ('wakeLock' in navigator) {
-      const lock = await navigator.wakeLock.request('screen');
+      await navigator.wakeLock.request('screen');
       document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState === 'visible') {
           try { await navigator.wakeLock.request('screen'); } catch {}
         }
       });
-      return lock;
     }
-  } catch (e) { console.warn('wakeLock failed', e); }
+  } catch (e) { console.warn('wakeLock', e); }
 }
 
 async function start() {
   startOverlay.remove();
-  setHud('requesting camera…');
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: true,
-  });
+  setStatus('requesting camera…');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: true,
+    });
+  } catch (e) {
+    setStatus('camera denied: ' + e.message);
+    return;
+  }
   video.srcObject = stream;
   keepAwake();
 
@@ -58,20 +85,31 @@ async function start() {
     debug: 1,
   });
 
-  peer.on('open', (id) => setHud(`live · room "${id}" · waiting for viewer`));
-  peer.on('error', (err) => setHud('error: ' + err.type));
+  peer.on('open', () => setStatus('live · waiting for viewer', true));
+  peer.on('error', (err) => setStatus('error: ' + err.type));
   peer.on('disconnected', () => {
-    setHud('disconnected · reconnecting…');
+    setStatus('reconnecting…');
     peer.reconnect();
   });
-  peer.on('call', (call) => {
-    call.answer(stream);
-    setHud('viewer connected');
-    call.on('close', () => setHud('viewer left · waiting'));
+
+  peer.on('connection', (conn) => {
+    conn.on('open', () => {
+      const call = peer.call(conn.peer, stream);
+      viewers++;
+      setStatus(`live · ${viewers} viewer${viewers > 1 ? 's' : ''}`, true);
+      const drop = () => {
+        viewers = Math.max(0, viewers - 1);
+        setStatus(viewers ? `live · ${viewers} viewer${viewers > 1 ? 's' : ''}` : 'live · waiting for viewer', true);
+      };
+      conn.on('close', drop);
+      call.on('close', drop);
+    });
   });
+
+  peer.on('call', (call) => call.answer(stream));
 }
 
-document.getElementById('go').onclick = () => start().catch(e => setHud('failed: ' + e.message));
+document.getElementById('go').onclick = () => start().catch(e => setStatus('failed: ' + e.message));
 </script>
 </body>
 </html>
