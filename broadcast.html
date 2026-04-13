@@ -79,42 +79,48 @@ async function start() {
   keepAwake();
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/stream`);
-  ws.binaryType = 'blob';
+  let ws, sendTimer;
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'broadcaster' }));
-    setStatus('live · waiting for viewers', true);
+  function connectWS() {
+    ws = new WebSocket(`${proto}://${location.host}/stream`);
+    ws.binaryType = 'blob';
 
-    const FPS = 10;
-    setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const w = preview.videoWidth;
-      const h = preview.videoHeight;
-      if (!w || !h) return;
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-      }
-      ctx.drawImage(preview, 0, 0, w, h);
-      canvas.toBlob((blob) => {
-        if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
-      }, 'image/jpeg', 0.7);
-    }, 1000 / FPS);
-  };
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'broadcaster' }));
+      setStatus('live · waiting for viewers', true);
+    };
 
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'viewers') {
-        viewersEl.textContent = msg.count + ' viewer' + (msg.count !== 1 ? 's' : '');
-        setStatus('live · ' + msg.count + ' viewer' + (msg.count !== 1 ? 's' : ''), true);
-      }
-    } catch {}
-  };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'viewers') {
+          viewersEl.textContent = msg.count + ' viewer' + (msg.count !== 1 ? 's' : '');
+          setStatus('live · ' + msg.count + ' viewer' + (msg.count !== 1 ? 's' : ''), true);
+        }
+      } catch {}
+    };
 
-  ws.onclose = () => setStatus('disconnected');
-  ws.onerror = () => setStatus('connection error');
+    ws.onclose = () => { setStatus('reconnecting…', false); setTimeout(connectWS, 2000); };
+    ws.onerror = () => ws.close();
+  }
+
+  connectWS();
+
+  const FPS = 10;
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const w = preview.videoWidth;
+    const h = preview.videoHeight;
+    if (!w || !h) return;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    ctx.drawImage(preview, 0, 0, w, h);
+    canvas.toBlob((blob) => {
+      if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+    }, 'image/jpeg', 0.7);
+  }, 1000 / FPS);
 }
 
 document.getElementById('go').onclick = () => start().catch(e => setStatus('failed: ' + e.message));

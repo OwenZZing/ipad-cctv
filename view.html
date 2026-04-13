@@ -44,29 +44,38 @@ function setStatus(t, live) {
 
 function connect() {
   document.getElementById('start').remove();
-  setStatus('connecting…');
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/stream`);
-  ws.binaryType = 'blob';
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'viewer' }));
-    setStatus('waiting for broadcaster…');
-  };
+  function openWS() {
+    setStatus('connecting…');
+    const ws = new WebSocket(`${proto}://${location.host}/stream`);
+    ws.binaryType = 'blob';
 
-  ws.onmessage = (e) => {
-    if (e.data instanceof Blob) {
-      const url = URL.createObjectURL(e.data);
-      frame.src = url;
-      if (prevUrl) URL.revokeObjectURL(prevUrl);
-      prevUrl = url;
-      setStatus('live', true);
-    }
-  };
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'viewer' }));
+      setStatus('waiting for broadcaster…');
+    };
 
-  ws.onclose = () => { setStatus('disconnected'); dotEl.classList.remove('live'); };
-  ws.onerror = () => setStatus('connection error');
+    ws.onmessage = (e) => {
+      if (e.data instanceof Blob) {
+        const url = URL.createObjectURL(e.data);
+        frame.src = url;
+        if (prevUrl) URL.revokeObjectURL(prevUrl);
+        prevUrl = url;
+        setStatus('live', true);
+      }
+    };
+
+    ws.onclose = () => {
+      dotEl.classList.remove('live');
+      setStatus('reconnecting…');
+      setTimeout(openWS, 2000);
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  openWS();
 }
 
 document.getElementById('go').onclick = connect;
