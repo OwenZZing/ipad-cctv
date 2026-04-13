@@ -1,6 +1,5 @@
 const express = require('express');
-const { ExpressPeerServer } = require('peer');
-const path = require('path');
+const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 9000;
 const app = express();
@@ -8,13 +7,45 @@ const app = express();
 app.use(express.static(__dirname));
 
 const server = app.listen(PORT, () => {
-  console.log(`HTTP  http://localhost:${PORT}`);
-  console.log(`Broadcast: http://localhost:${PORT}/broadcast.html`);
-  console.log(`View:      http://localhost:${PORT}/view.html`);
+  console.log(`http://localhost:${PORT}`);
 });
 
-const peerServer = ExpressPeerServer(server, { path: '/', allow_discovery: true });
-app.use('/peerjs', peerServer);
+const wss = new WebSocketServer({ server, path: '/stream' });
 
-peerServer.on('connection', (c) => console.log('peer connect', c.getId()));
-peerServer.on('disconnect', (c) => console.log('peer disconnect', c.getId()));
+let broadcaster = null;
+const viewers = new Set();
+
+wss.on('connection', (ws) => {
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'broadcaster') {
+        if (broadcaster && broadcaster.readyState === ws.OPEN) broadcaster.close();
+        broadcaster = ws;
+        ws.role = 'broadcaster';
+        console.log('broadcaster connected');
+      } else if (msg.type === 'viewer') {
+        viewers.add(ws);
+        ws.role = 'viewer';
+        console.log('viewer connected, total:', viewers.size);
+      }
+    } else {
+      // binary = JPEG frame — relay to all viewers
+      if (ws.role === 'broadcaster') {
+        for (const v of viewers) {
+          if (v.readyState === v.OPEN) v.send(data, { binary: true });
+        }
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    if (ws.role === 'broadcaster') {
+      broadcaster = null;
+      console.log('broadcaster disconnected');
+    } else if (ws.role === 'viewer') {
+      viewers.delete(ws);
+      console.log('viewer disconnected, remaining:', viewers.size);
+    }
+  });
+});

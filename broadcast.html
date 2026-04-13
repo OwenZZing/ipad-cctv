@@ -7,7 +7,8 @@
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; color: #e5e7eb; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
-  #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #preview { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  canvas { display: none; }
   .hud { position: fixed; top: env(safe-area-inset-top, 12px); left: 12px; right: 12px; display: flex; justify-content: space-between; gap: 8px; pointer-events: none; }
   .pill { pointer-events: auto; background: rgba(15,23,42,.75); backdrop-filter: blur(12px); border-radius: 999px; padding: 8px 14px; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
@@ -26,23 +27,21 @@
   <p>Tap to start streaming from this device.</p>
   <button id="go">● Start broadcasting</button>
 </div></div>
-<video id="video" autoplay muted playsinline></video>
+<video id="preview" autoplay muted playsinline></video>
+<canvas id="canvas"></canvas>
 <div class="hud">
   <span class="pill"><span id="dot" class="dot"></span><span id="status">idle</span></span>
-  <span class="pill" id="room">room: —</span>
+  <span class="pill" id="viewers">0 viewers</span>
 </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const ROOM_ID = new URLSearchParams(location.search).get('room') || 'cctv-room-1';
 const statusEl = document.getElementById('status');
 const dotEl = document.getElementById('dot');
-const roomEl = document.getElementById('room');
-const video = document.getElementById('video');
-const startOverlay = document.getElementById('start');
-roomEl.textContent = 'room: ' + ROOM_ID;
+const viewersEl = document.getElementById('viewers');
+const preview = document.getElementById('preview');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
 
-let viewers = 0;
 function setStatus(t, live) {
   statusEl.textContent = t;
   dotEl.classList.toggle('live', !!live);
@@ -58,12 +57,13 @@ async function keepAwake() {
         }
       });
     }
-  } catch (e) { console.warn('wakeLock', e); }
+  } catch {}
 }
 
 async function start() {
-  startOverlay.remove();
+  document.getElementById('start').remove();
   setStatus('requesting camera…');
+
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -74,53 +74,45 @@ async function start() {
     setStatus('camera denied: ' + e.message);
     return;
   }
-  video.srcObject = stream;
+
+  preview.srcObject = stream;
   keepAwake();
 
-  const peer = new Peer(ROOM_ID, {
-    host: location.hostname,
-    port: location.port || (location.protocol === 'https:' ? 443 : 80),
-    path: '/peerjs',
-    secure: location.protocol === 'https:',
-    debug: 1,
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:openrelay.metered.ca:80' },
-        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-      ],
-    },
-  });
+  const track = stream.getVideoTracks()[0];
+  const { width = 1280, height = 720 } = track.getSettings();
+  canvas.width = width;
+  canvas.height = height;
 
-  peer.on('open', () => setStatus('live · waiting for viewer', true));
-  peer.on('error', (err) => setStatus('error: ' + err.type));
-  peer.on('disconnected', () => {
-    setStatus('reconnecting…');
-    peer.reconnect();
-  });
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/stream`);
+  ws.binaryType = 'blob';
 
-  const callViewer = (viewerId) => {
-    console.log('calling viewer', viewerId);
-    const call = peer.call(viewerId, stream);
-    viewers++;
-    setStatus(`live · ${viewers} viewer${viewers > 1 ? 's' : ''}`, true);
-    const drop = () => {
-      viewers = Math.max(0, viewers - 1);
-      setStatus(viewers ? `live · ${viewers} viewer${viewers > 1 ? 's' : ''}` : 'live · waiting for viewer', true);
-    };
-    call.on('close', drop);
-    call.on('error', (e) => { console.warn('call err', e); drop(); });
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'broadcaster' }));
+    setStatus('live · waiting for viewers', true);
+
+    const FPS = 10;
+    setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ctx.drawImage(preview, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+      }, 'image/jpeg', 0.7);
+    }, 1000 / FPS);
   };
 
-  peer.on('connection', (conn) => {
-    console.log('viewer data conn from', conn.peer);
-    callViewer(conn.peer);
-    conn.on('close', () => console.log('data conn closed', conn.peer));
-  });
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'viewers') {
+        viewersEl.textContent = msg.count + ' viewer' + (msg.count !== 1 ? 's' : '');
+        setStatus('live · ' + msg.count + ' viewer' + (msg.count !== 1 ? 's' : ''), true);
+      }
+    } catch {}
+  };
 
-  peer.on('call', (incoming) => incoming.answer(stream));
+  ws.onclose = () => setStatus('disconnected');
+  ws.onerror = () => setStatus('connection error');
 }
 
 document.getElementById('go').onclick = () => start().catch(e => setStatus('failed: ' + e.message));
