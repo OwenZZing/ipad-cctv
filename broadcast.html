@@ -78,11 +78,6 @@ async function start() {
   preview.srcObject = stream;
   keepAwake();
 
-  const track = stream.getVideoTracks()[0];
-  const { width = 1280, height = 720 } = track.getSettings();
-  canvas.width = width;
-  canvas.height = height;
-
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/stream`);
   ws.binaryType = 'blob';
@@ -94,7 +89,14 @@ async function start() {
     const FPS = 10;
     setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      ctx.drawImage(preview, 0, 0, canvas.width, canvas.height);
+      const w = preview.videoWidth;
+      const h = preview.videoHeight;
+      if (!w || !h) return;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      ctx.drawImage(preview, 0, 0, w, h);
       canvas.toBlob((blob) => {
         if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
       }, 'image/jpeg', 0.7);
