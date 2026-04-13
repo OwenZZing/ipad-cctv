@@ -71,18 +71,30 @@ function connect() {
   peer.on('call', (call) => {
     call.answer();
     call.on('stream', (remote) => {
-      video.srcObject = remote;
+      // Clone stream to work around Chrome H.264 black-screen bug
+      const stream = remote.clone ? remote.clone() : remote;
+      video.srcObject = stream;
       setStatus('live · ' + ROOM_ID, true);
-      video.onloadedmetadata = () => {
-        video.play().catch(() => {
-          // Chrome autoplay blocked — show tap-to-play overlay
-          const overlay = document.createElement('div');
-          overlay.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;z-index:20;cursor:pointer;';
-          overlay.innerHTML = '<div style="background:rgba(0,0,0,.7);color:#fff;padding:20px 36px;border-radius:14px;font-size:18px;font-weight:600;">▶  tap to play</div>';
-          document.body.appendChild(overlay);
-          overlay.addEventListener('click', () => { video.play(); overlay.remove(); }, { once: true });
-        });
+
+      let played = false;
+      const showTapOverlay = () => {
+        if (document.getElementById('tap-overlay')) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'tap-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;z-index:20;cursor:pointer;';
+        overlay.innerHTML = '<div style="background:rgba(0,0,0,.7);color:#fff;padding:20px 36px;border-radius:14px;font-size:18px;font-weight:600;">▶  tap to play</div>';
+        document.body.appendChild(overlay);
+        overlay.addEventListener('click', () => { video.play(); overlay.remove(); }, { once: true });
       };
+      const tryPlay = () => {
+        if (played) return;
+        played = true;
+        video.play().catch(showTapOverlay);
+      };
+
+      video.addEventListener('loadedmetadata', tryPlay, { once: true });
+      video.addEventListener('canplay', tryPlay, { once: true });
+      setTimeout(tryPlay, 1500); // fallback if events don't fire
     });
     call.on('close', () => setStatus('stream ended'));
     call.on('error', (e) => setStatus('call error: ' + e));
